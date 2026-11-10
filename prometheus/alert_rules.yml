@@ -1,0 +1,14 @@
+groups:
+  - name: self_healing_alerts
+    rules:
+      - alert: NginxDown
+        expr: probe_success{job="blackbox"} == 0
+        for: 30s
+        labels:
+          severity: critical
+          service: nginx
+          tier: frontend
+          action: auto-heal
+        annotations:
+          summary: "NGINX web server is DOWN"
+          description: "Blackbox Exporter probe failed for NGINX endpoint (probe_success == 0). Automated remediation pipeline triggered."

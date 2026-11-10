@@ -1,0 +1,67 @@
+---
+- name: Autonomous Self-Healing - Restore NGINX Container
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    target_container: "{{ container_name | default('self-healing-nginx') }}"
+    docker_socket: "unix:///var/run/docker.sock"
+
+  tasks:
+    - name: 1. Inspect target container state before recovery
+      community.docker.docker_container_info:
+        name: "{{ target_container }}"
+        docker_host: "{{ docker_socket }}"
+      register: initial_status
+
+    - name: Fail if target container does not exist
+      ansible.builtin.fail:
+        msg: "CRITICAL: Target container '{{ target_container }}' not found on Docker host!"
+      when: not initial_status.exists
+
+    - name: Display current container state before remediation
+      ansible.builtin.debug:
+        msg: >-
+          Container '{{ target_container }}' found.
+          Running State: {{ initial_status.container.State.Running }},
+          Status: {{ initial_status.container.State.Status }},
+          ExitCode: {{ initial_status.container.State.ExitCode }}
+
+    - name: 2. Execute remediation - Start/Restart container if not running
+      community.docker.docker_container:
+        name: "{{ target_container }}"
+        state: started
+        restart: true
+        docker_host: "{{ docker_socket }}"
+      register: remediation_action
+      when: not initial_status.container.State.Running
+
+    - name: 3. Pause briefly to allow container initialization
+      ansible.builtin.pause:
+        seconds: 2
+      when: not initial_status.container.State.Running
+
+    - name: 4. Re-inspect container state post-remediation
+      community.docker.docker_container_info:
+        name: "{{ target_container }}"
+        docker_host: "{{ docker_socket }}"
+      register: post_status
+
+    - name: 5. Verify and assert that container is now strictly RUNNING
+      ansible.builtin.assert:
+        that:
+          - post_status.exists
+          - post_status.container.State.Running == true
+          - post_status.container.State.Status == 'running'
+        fail_msg: "Remediation failed: Container '{{ target_container }}' is NOT running!"
+        success_msg: "Remediation verified: Container '{{ target_container }}' is actively RUNNING."
+
+    - name: 6. Output final recovery summary
+      ansible.builtin.debug:
+        msg: >-
+          RECOVERY COMPLETED SUCCESSFULLY:
+          Container: {{ target_container }},
+          ID: {{ post_status.container.Id[:12] }},
+          State: {{ post_status.container.State.Status }},
+          StartedAt: {{ post_status.container.State.StartedAt }}

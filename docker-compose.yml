@@ -1,0 +1,95 @@
+﻿services:
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: self-healing-nginx
+    restart: unless-stopped
+    ports:
+      - "8081:80"
+    volumes:
+      - ./nginx/index.html:/usr/share/nginx/html/index.html:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:80/ || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 3s
+    networks:
+      - self-healing-net
+
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.25.0
+    container_name: self-healing-blackbox
+    restart: unless-stopped
+    ports:
+      - "9115:9115"
+    volumes:
+      - ./blackbox/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
+    networks:
+      - self-healing-net
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: self-healing-alertmanager
+    restart: unless-stopped
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+    depends_on:
+      - auto-healer
+    networks:
+      - self-healing-net
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: self-healing-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+    depends_on:
+      - blackbox-exporter
+      - alertmanager
+      - nginx
+    networks:
+      - self-healing-net
+
+  auto-healer:
+    build:
+      context: ./automation
+      dockerfile: Dockerfile
+    container_name: self-healing-automation
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./automation/ansible:/app/ansible:ro
+    environment:
+      - RECOVERY_COOLDOWN_SECONDS=30
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8000/health\")' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    networks:
+      - self-healing-net
+
+networks:
+  self-healing-net:
+    driver: bridge
+
+volumes:
+  prometheus_data:
+    driver: local
